@@ -1,0 +1,15 @@
+{
+	"name": "nyc-dohmh-adf-graphql-to-sql",
+	"properties": {
+		"trustModeClaimForMi": {
+			"value": "Disabled",
+			"editable": true
+		}
+	},
+	"location": "canadacentral",
+	"identity": {
+		"type": "SystemAssigned",
+		"principalId": "8686c50d-ca5f-4e1c-9695-cb7d9545746f",
+		"tenantId": "9ca5774b-4503-4f6f-8c87-1ad4a09e20d4"
+	}
+}

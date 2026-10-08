@@ -1,0 +1,14 @@
+{
+	"name": "LS_GraphQlApi",
+	"type": "Microsoft.DataFactory/factories/linkedservices",
+	"properties": {
+		"description": "REST linked service pointing at the GraphQL endpoint of the sample App Service. The API requires no user authentication, so Anonymous is correct here.",
+		"type": "RestService",
+		"annotations": [],
+		"typeProperties": {
+			"url": "https://nyc-dohmh-adf-graphql-to-sql-fuhnhxaxgzgyfqbq.canadacentral-01.azurewebsites.net/graphql",
+			"enableServerCertificateValidation": true,
+			"authenticationType": "Anonymous"
+		}
+	}
+}

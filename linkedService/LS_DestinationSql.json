@@ -1,0 +1,13 @@
+{
+	"name": "LS_DestinationSql",
+	"type": "Microsoft.DataFactory/factories/linkedservices",
+	"properties": {
+		"description": "Destination Azure SQL database. Authenticates with the data factory's system-assigned managed identity, so no secret is stored in the factory.",
+		"type": "AzureSqlDatabase",
+		"annotations": [],
+		"typeProperties": {
+			"connectionString": "Integrated Security=False;Encrypt=True;Connection Timeout=60;Data Source=nyc-dohmh-adf-graphql-to-sql.database.windows.net;Initial Catalog=nyc-dohmh-adf-graphql-to-sql-2",
+			"authenticationType": "SystemAssignedManagedIdentity"
+		}
+	}
+}

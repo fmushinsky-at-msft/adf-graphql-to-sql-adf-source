@@ -1,0 +1,14 @@
+{
+	"name": "DS_GraphQlApi",
+	"properties": {
+		"description": "Generic REST resource for the GraphQL endpoint. The endpoint URL lives on the linked service and every request is a POST whose body is built by the pipeline, so no relative URL is needed.",
+		"linkedServiceName": {
+			"referenceName": "LS_GraphQlApi",
+			"type": "LinkedServiceReference"
+		},
+		"annotations": [],
+		"type": "RestResource",
+		"schema": []
+	},
+	"type": "Microsoft.DataFactory/factories/datasets"
+}

@@ -1,0 +1,18 @@
+{
+	"name": "DS_Dest_WatermarkControl",
+	"properties": {
+		"description": "Watermark control table. Used by Lookup activities that call the etl stored procedures; the table itself is only read directly for diagnostics.",
+		"linkedServiceName": {
+			"referenceName": "LS_DestinationSql",
+			"type": "LinkedServiceReference"
+		},
+		"annotations": [],
+		"type": "AzureSqlTable",
+		"schema": [],
+		"typeProperties": {
+			"schema": "dbo",
+			"table": "WatermarkControl"
+		}
+	},
+	"type": "Microsoft.DataFactory/factories/datasets"
+}
