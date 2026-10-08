@@ -1,0 +1,57 @@
+{
+	"$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"factoryName": {
+			"type": "string",
+			"metadata": "Data Factory name",
+			"defaultValue": "nyc-dohmh-adf-graphql-to-sql"
+		},
+		"LS_DestinationSql_connectionString": {
+			"type": "secureString",
+			"metadata": "Secure string for 'connectionString' of 'LS_DestinationSql'",
+			"defaultValue": "Integrated Security=False;Encrypt=True;Connection Timeout=60;Data Source=nyc-dohmh-adf-graphql-to-sql.database.windows.net;Initial Catalog=nyc-dohmh-adf-graphql-to-sql-2"
+		},
+		"LS_GraphQlApi_properties_typeProperties_url": {
+			"type": "string",
+			"defaultValue": "https://nyc-dohmh-adf-graphql-to-sql-fuhnhxaxgzgyfqbq.canadacentral-01.azurewebsites.net/graphql"
+		},
+		"containerUri": {
+			"type": "string",
+			"metadata": "URI to storage account containing linked ARM templates"
+		},
+		"containerSasToken": {
+			"type": "string",
+			"metadata": "Sas token to storage account containing linked ARM templates"
+		}
+	},
+	"variables": {
+		"factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]"
+	},
+	"resources": [
+		{
+			"name": "nyc-dohmh-adf-graphql-to-sql_ArmTemplate_0",
+			"type": "Microsoft.Resources/deployments",
+			"apiVersion": "2024-03-01",
+			"properties": {
+				"mode": "incremental",
+				"templateLink": {
+					"uri": "[concat(parameters('containerUri'), '/ArmTemplate_0.json', parameters('containerSasToken'))]",
+					"contentVersion": "1.0.0.0"
+				},
+				"parameters": {
+					"factoryName": {
+						"value": "[parameters('factoryName')]"
+					},
+					"LS_DestinationSql_connectionString": {
+						"value": "[parameters('LS_DestinationSql_connectionString')]"
+					},
+					"LS_GraphQlApi_properties_typeProperties_url": {
+						"value": "[parameters('LS_GraphQlApi_properties_typeProperties_url')]"
+					}
+				}
+			},
+			"dependsOn": []
+		}
+	]
+}

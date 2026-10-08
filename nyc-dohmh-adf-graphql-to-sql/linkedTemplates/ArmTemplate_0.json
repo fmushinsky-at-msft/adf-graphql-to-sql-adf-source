@@ -1,0 +1,994 @@
+{
+	"$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"factoryName": {
+			"type": "string",
+			"metadata": "Data Factory name",
+			"defaultValue": "nyc-dohmh-adf-graphql-to-sql"
+		},
+		"LS_DestinationSql_connectionString": {
+			"type": "secureString",
+			"metadata": "Secure string for 'connectionString' of 'LS_DestinationSql'",
+			"defaultValue": "Integrated Security=False;Encrypt=True;Connection Timeout=60;Data Source=nyc-dohmh-adf-graphql-to-sql.database.windows.net;Initial Catalog=nyc-dohmh-adf-graphql-to-sql-2"
+		},
+		"LS_GraphQlApi_properties_typeProperties_url": {
+			"type": "string",
+			"defaultValue": "https://nyc-dohmh-adf-graphql-to-sql-fuhnhxaxgzgyfqbq.canadacentral-01.azurewebsites.net/graphql"
+		}
+	},
+	"variables": {
+		"factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]"
+	},
+	"resources": [
+		{
+			"name": "[concat(parameters('factoryName'), '/LS_DestinationSql')]",
+			"type": "Microsoft.DataFactory/factories/linkedServices",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Destination Azure SQL database. Authenticates with the data factory's system-assigned managed identity, so no secret is stored in the factory.",
+				"annotations": [],
+				"type": "AzureSqlDatabase",
+				"typeProperties": {
+					"connectionString": "[parameters('LS_DestinationSql_connectionString')]"
+				}
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/LS_GraphQlApi')]",
+			"type": "Microsoft.DataFactory/factories/linkedServices",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "REST linked service pointing at the GraphQL endpoint of the sample App Service. The API requires no user authentication, so Anonymous is correct here.",
+				"annotations": [],
+				"type": "RestService",
+				"typeProperties": {
+					"url": "[parameters('LS_GraphQlApi_properties_typeProperties_url')]",
+					"enableServerCertificateValidation": true,
+					"authenticationType": "Anonymous"
+				}
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/DS_Dest_StgRestaurant')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Landing table for the delta rows of the current pipeline run.",
+				"linkedServiceName": {
+					"referenceName": "LS_DestinationSql",
+					"type": "LinkedServiceReference"
+				},
+				"annotations": [],
+				"type": "AzureSqlTable",
+				"schema": [],
+				"typeProperties": {
+					"schema": "stg",
+					"table": "Restaurant"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/LS_DestinationSql')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/DS_Dest_StgRestaurantKey')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Landing table for the full source key set, used to detect rows deleted at the source.",
+				"linkedServiceName": {
+					"referenceName": "LS_DestinationSql",
+					"type": "LinkedServiceReference"
+				},
+				"annotations": [],
+				"type": "AzureSqlTable",
+				"schema": [],
+				"typeProperties": {
+					"schema": "stg",
+					"table": "RestaurantKey"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/LS_DestinationSql')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/DS_Dest_WatermarkControl')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Watermark control table. Used by Lookup activities that call the etl stored procedures; the table itself is only read directly for diagnostics.",
+				"linkedServiceName": {
+					"referenceName": "LS_DestinationSql",
+					"type": "LinkedServiceReference"
+				},
+				"annotations": [],
+				"type": "AzureSqlTable",
+				"schema": [],
+				"typeProperties": {
+					"schema": "dbo",
+					"table": "WatermarkControl"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/LS_DestinationSql')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/DS_GraphQlApi')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Generic REST resource for the GraphQL endpoint. The endpoint URL lives on the linked service and every request is a POST whose body is built by the pipeline, so no relative URL is needed.",
+				"linkedServiceName": {
+					"referenceName": "LS_GraphQlApi",
+					"type": "LinkedServiceReference"
+				},
+				"annotations": [],
+				"type": "RestResource",
+				"typeProperties": {},
+				"schema": []
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/LS_GraphQlApi')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/PL_Sync_Restaurants_GraphQL_To_Sql')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Incrementally syncs demo.Restaurant from the GraphQL API into dbo.Restaurant in the destination database. Uses a watermark for the delta window, pages 30 rows at a time, and applies inserts, updates and deletes.",
+				"activities": [
+					{
+						"name": "LookupStoredWatermark",
+						"description": "Reads the watermark stored by the previous successful run. This is the exclusive lower bound of this run's delta window.",
+						"type": "Lookup",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "0.00:20:00",
+							"retry": 4,
+							"retryIntervalInSeconds": 60,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "AzureSqlSource",
+								"sqlReaderStoredProcedureName": "[[etl].[usp_GetWatermark]",
+								"storedProcedureParameters": {
+									"TableName": {
+										"type": "String",
+										"value": {
+											"value": "@pipeline().parameters.sourceTableName",
+											"type": "Expression"
+										}
+									}
+								},
+								"queryTimeout": "00:10:00",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DS_Dest_WatermarkControl",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": true
+						}
+					},
+					{
+						"name": "GetSourceWatermark",
+						"description": "Reads the source high-water mark and row count once, up front. Pinning the upper bound keeps offset paging stable even if rows change while the pipeline is still reading.",
+						"type": "WebActivity",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "0.00:10:00",
+							"retry": 4,
+							"retryIntervalInSeconds": 60,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"method": "POST",
+							"headers": {
+								"Content-Type": "application/json",
+								"Accept": "application/json"
+							},
+							"url": {
+								"value": "@pipeline().parameters.graphQlEndpoint",
+								"type": "Expression"
+							},
+							"body": {
+								"query": "{ restaurantWatermark { maxLastUpdatedDateTime rowCount serverUtcNow } }"
+							}
+						}
+					},
+					{
+						"name": "SetOldWatermark",
+						"description": "formatDateTime pins the value to millisecond precision. Without it the boundary can round to whole seconds and rows get re-read on every run.",
+						"type": "SetVariable",
+						"dependsOn": [
+							{
+								"activity": "LookupStoredWatermark",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"variableName": "OldWatermark",
+							"value": {
+								"value": "@formatDateTime(activity('LookupStoredWatermark').output.firstRow.WatermarkValue, 'yyyy-MM-ddTHH:mm:ss.fff')",
+								"type": "Expression"
+							}
+						}
+					},
+					{
+						"name": "CheckSourceWatermarkResponse",
+						"description": "GraphQL reports application errors with HTTP 200, so a failed query looks like a successful web call. Without this check the run fails later with an opaque 'property data doesn't exist' message instead of the actual error.",
+						"type": "IfCondition",
+						"dependsOn": [
+							{
+								"activity": "GetSourceWatermark",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"expression": {
+								"value": "@or(contains(activity('GetSourceWatermark').output, 'errors'), not(contains(activity('GetSourceWatermark').output, 'data')))",
+								"type": "Expression"
+							},
+							"ifTrueActivities": [
+								{
+									"name": "FailOnGraphQlError",
+									"type": "Fail",
+									"dependsOn": [],
+									"userProperties": [],
+									"typeProperties": {
+										"message": {
+											"value": "@concat('The GraphQL API returned an error instead of a watermark: ', string(activity('GetSourceWatermark').output))",
+											"type": "Expression"
+										},
+										"errorCode": "GraphQlQueryFailed"
+									}
+								}
+							]
+						}
+					},
+					{
+						"name": "SetNewWatermark",
+						"description": "Falls back to the source server clock when the table is empty and MAX(LastUpdatedDateTime) is null. formatDateTime pins the value to millisecond precision.",
+						"type": "SetVariable",
+						"dependsOn": [
+							{
+								"activity": "CheckSourceWatermarkResponse",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"variableName": "NewWatermark",
+							"value": {
+								"value": "@formatDateTime(coalesce(activity('GetSourceWatermark').output.data.restaurantWatermark.maxLastUpdatedDateTime, activity('GetSourceWatermark').output.data.restaurantWatermark.serverUtcNow), 'yyyy-MM-ddTHH:mm:ss.fff')",
+								"type": "Expression"
+							}
+						}
+					},
+					{
+						"name": "SetSourceRowCount",
+						"description": "Row count reported by the source. Used as a guard so an incomplete key harvest can never delete good rows from the target.",
+						"type": "SetVariable",
+						"dependsOn": [
+							{
+								"activity": "SetNewWatermark",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"variableName": "SourceRowCount",
+							"value": {
+								"value": "@string(activity('GetSourceWatermark').output.data.restaurantWatermark.rowCount)",
+								"type": "Expression"
+							}
+						}
+					},
+					{
+						"name": "GetDeltaRowCount",
+						"description": "Asks the API how many rows fall inside this run's watermark window. ApplySync compares this with what actually landed in staging, so a GraphQL error mid-paging cannot silently produce a partial load that still advances the watermark.",
+						"type": "WebActivity",
+						"dependsOn": [
+							{
+								"activity": "SetOldWatermark",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							},
+							{
+								"activity": "SetNewWatermark",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.00:10:00",
+							"retry": 4,
+							"retryIntervalInSeconds": 60,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"method": "POST",
+							"headers": {
+								"Content-Type": "application/json",
+								"Accept": "application/json"
+							},
+							"url": {
+								"value": "@pipeline().parameters.graphQlEndpoint",
+								"type": "Expression"
+							},
+							"body": {
+								"value": "@concat('{\"query\":\"query($updatedAfter:String,$updatedThrough:String){restaurants(updatedAfter:$updatedAfter,updatedThrough:$updatedThrough,skip:0){totalCount}}\",\"variables\":{\"updatedAfter\":\"',variables('OldWatermark'),'\",\"updatedThrough\":\"',variables('NewWatermark'),'\"}}')",
+								"type": "Expression"
+							}
+						}
+					},
+					{
+						"name": "CheckDeltaRowCountResponse",
+						"description": "Same HTTP-200-with-errors problem as the watermark read: without this the count silently becomes unusable and the guard it feeds would be meaningless.",
+						"type": "IfCondition",
+						"dependsOn": [
+							{
+								"activity": "GetDeltaRowCount",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"expression": {
+								"value": "@or(contains(activity('GetDeltaRowCount').output, 'errors'), not(contains(activity('GetDeltaRowCount').output, 'data')))",
+								"type": "Expression"
+							},
+							"ifTrueActivities": [
+								{
+									"name": "FailOnDeltaCountError",
+									"type": "Fail",
+									"dependsOn": [],
+									"userProperties": [],
+									"typeProperties": {
+										"message": {
+											"value": "@concat('The GraphQL API returned an error instead of a delta row count: ', string(activity('GetDeltaRowCount').output))",
+											"type": "Expression"
+										},
+										"errorCode": "GraphQlQueryFailed"
+									}
+								}
+							]
+						}
+					},
+					{
+						"name": "SetExpectedDeltaCount",
+						"type": "SetVariable",
+						"dependsOn": [
+							{
+								"activity": "CheckDeltaRowCountResponse",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"variableName": "ExpectedDeltaCount",
+							"value": {
+								"value": "@string(activity('GetDeltaRowCount').output.data.restaurants.totalCount)",
+								"type": "Expression"
+							}
+						}
+					},
+					{
+						"name": "StartSync",
+						"description": "Clears the staging tables so the run always starts clean, even after a previous failure.",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SetOldWatermark",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							},
+							{
+								"activity": "SetSourceRowCount",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							},
+							{
+								"activity": "SetExpectedDeltaCount",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.00:20:00",
+							"retry": 4,
+							"retryIntervalInSeconds": 60,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "[[etl].[usp_StartRestaurantSync]"
+						},
+						"linkedServiceName": {
+							"referenceName": "LS_DestinationSql",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "UntilAllDeltaPagesCopied",
+						"description": "Pages through the delta window. The API returns a fixed page size, so a short page means the last page was reached.",
+						"type": "Until",
+						"dependsOn": [
+							{
+								"activity": "StartSync",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"expression": {
+								"value": "@not(variables('DataHasMore'))",
+								"type": "Expression"
+							},
+							"activities": [
+								{
+									"name": "CopyDeltaPage",
+									"description": "POSTs one GraphQL page and bulk-inserts the rows into stg.Restaurant.",
+									"type": "Copy",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.00:20:00",
+										"retry": 4,
+										"retryIntervalInSeconds": 60,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "RestSource",
+											"httpRequestTimeout": "00:05:00",
+											"requestInterval": "00.00:00:00.100",
+											"requestMethod": "POST",
+											"requestBody": {
+												"value": "@concat('{\"query\":\"query($updatedAfter:String,$updatedThrough:String,$skip:Int!){restaurants(updatedAfter:$updatedAfter,updatedThrough:$updatedThrough,skip:$skip){items{restaurantId name borough cuisine inspectionGrade inspectionScore seatingCapacity isActive createDateTime lastUpdatedDateTime}}}\",\"variables\":{\"updatedAfter\":\"',variables('OldWatermark'),'\",\"updatedThrough\":\"',variables('NewWatermark'),'\",\"skip\":',variables('DataSkip'),'}}')",
+												"type": "Expression"
+											},
+											"additionalHeaders": {
+												"Content-Type": "application/json",
+												"Accept": "application/json"
+											}
+										},
+										"sink": {
+											"type": "AzureSqlSink",
+											"writeBehavior": "insert",
+											"sqlWriterUseTableLock": false,
+											"tableOption": "none",
+											"disableMetricsCollection": false
+										},
+										"enableStaging": false,
+										"translator": {
+											"type": "TabularTranslator",
+											"mappings": [
+												{
+													"source": {
+														"path": "[['restaurantId']"
+													},
+													"sink": {
+														"name": "RestaurantId",
+														"type": "Int32"
+													}
+												},
+												{
+													"source": {
+														"path": "[['name']"
+													},
+													"sink": {
+														"name": "Name",
+														"type": "String"
+													}
+												},
+												{
+													"source": {
+														"path": "[['borough']"
+													},
+													"sink": {
+														"name": "Borough",
+														"type": "String"
+													}
+												},
+												{
+													"source": {
+														"path": "[['cuisine']"
+													},
+													"sink": {
+														"name": "Cuisine",
+														"type": "String"
+													}
+												},
+												{
+													"source": {
+														"path": "[['inspectionGrade']"
+													},
+													"sink": {
+														"name": "InspectionGrade",
+														"type": "String"
+													}
+												},
+												{
+													"source": {
+														"path": "[['inspectionScore']"
+													},
+													"sink": {
+														"name": "InspectionScore",
+														"type": "Int32"
+													}
+												},
+												{
+													"source": {
+														"path": "[['seatingCapacity']"
+													},
+													"sink": {
+														"name": "SeatingCapacity",
+														"type": "Int32"
+													}
+												},
+												{
+													"source": {
+														"path": "[['isActive']"
+													},
+													"sink": {
+														"name": "IsActive",
+														"type": "Boolean"
+													}
+												},
+												{
+													"source": {
+														"path": "[['createDateTime']"
+													},
+													"sink": {
+														"name": "CreateDateTime",
+														"type": "DateTime"
+													}
+												},
+												{
+													"source": {
+														"path": "[['lastUpdatedDateTime']"
+													},
+													"sink": {
+														"name": "LastUpdatedDateTime",
+														"type": "DateTime"
+													}
+												}
+											],
+											"collectionReference": "$['data']['restaurants']['items']",
+											"mapComplexValuesToString": false
+										}
+									},
+									"inputs": [
+										{
+											"referenceName": "DS_GraphQlApi",
+											"type": "DatasetReference",
+											"parameters": {}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "DS_Dest_StgRestaurant",
+											"type": "DatasetReference",
+											"parameters": {}
+										}
+									]
+								},
+								{
+									"name": "EvaluateDeltaHasMore",
+									"type": "SetVariable",
+									"dependsOn": [
+										{
+											"activity": "CopyDeltaPage",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "DataHasMore",
+										"value": {
+											"value": "@equals(activity('CopyDeltaPage').output.rowsCopied, pipeline().parameters.pageSize)",
+											"type": "Expression"
+										}
+									}
+								},
+								{
+									"name": "ComputeNextDeltaSkip",
+									"description": "A pipeline variable cannot reference itself, so the next offset is staged in a second variable first.",
+									"type": "SetVariable",
+									"dependsOn": [
+										{
+											"activity": "EvaluateDeltaHasMore",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "DataSkipNext",
+										"value": {
+											"value": "@string(add(int(variables('DataSkip')), int(pipeline().parameters.pageSize)))",
+											"type": "Expression"
+										}
+									}
+								},
+								{
+									"name": "AdvanceDeltaSkip",
+									"type": "SetVariable",
+									"dependsOn": [
+										{
+											"activity": "ComputeNextDeltaSkip",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "DataSkip",
+										"value": {
+											"value": "@variables('DataSkipNext')",
+											"type": "Expression"
+										}
+									}
+								}
+							],
+							"timeout": "0.01:00:00"
+						}
+					},
+					{
+						"name": "UntilAllKeyPagesCopied",
+						"description": "Pages through every primary key that currently exists at the source. A watermark delta can never reveal a deleted row, so the key set is what makes delete detection possible.",
+						"type": "Until",
+						"dependsOn": [
+							{
+								"activity": "UntilAllDeltaPagesCopied",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"expression": {
+								"value": "@not(variables('KeyHasMore'))",
+								"type": "Expression"
+							},
+							"activities": [
+								{
+									"name": "CopyKeyPage",
+									"type": "Copy",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.00:20:00",
+										"retry": 4,
+										"retryIntervalInSeconds": 60,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "RestSource",
+											"httpRequestTimeout": "00:05:00",
+											"requestInterval": "00.00:00:00.100",
+											"requestMethod": "POST",
+											"requestBody": {
+												"value": "@concat('{\"query\":\"query($skip:Int!){restaurantKeys(skip:$skip){items{restaurantId}}}\",\"variables\":{\"skip\":',variables('KeySkip'),'}}')",
+												"type": "Expression"
+											},
+											"additionalHeaders": {
+												"Content-Type": "application/json",
+												"Accept": "application/json"
+											}
+										},
+										"sink": {
+											"type": "AzureSqlSink",
+											"writeBehavior": "insert",
+											"sqlWriterUseTableLock": false,
+											"tableOption": "none",
+											"disableMetricsCollection": false
+										},
+										"enableStaging": false,
+										"translator": {
+											"type": "TabularTranslator",
+											"mappings": [
+												{
+													"source": {
+														"path": "[['restaurantId']"
+													},
+													"sink": {
+														"name": "RestaurantId",
+														"type": "Int32"
+													}
+												}
+											],
+											"collectionReference": "$['data']['restaurantKeys']['items']",
+											"mapComplexValuesToString": false
+										}
+									},
+									"inputs": [
+										{
+											"referenceName": "DS_GraphQlApi",
+											"type": "DatasetReference",
+											"parameters": {}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "DS_Dest_StgRestaurantKey",
+											"type": "DatasetReference",
+											"parameters": {}
+										}
+									]
+								},
+								{
+									"name": "EvaluateKeyHasMore",
+									"type": "SetVariable",
+									"dependsOn": [
+										{
+											"activity": "CopyKeyPage",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "KeyHasMore",
+										"value": {
+											"value": "@equals(activity('CopyKeyPage').output.rowsCopied, pipeline().parameters.pageSize)",
+											"type": "Expression"
+										}
+									}
+								},
+								{
+									"name": "ComputeNextKeySkip",
+									"type": "SetVariable",
+									"dependsOn": [
+										{
+											"activity": "EvaluateKeyHasMore",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "KeySkipNext",
+										"value": {
+											"value": "@string(add(int(variables('KeySkip')), int(pipeline().parameters.pageSize)))",
+											"type": "Expression"
+										}
+									}
+								},
+								{
+									"name": "AdvanceKeySkip",
+									"type": "SetVariable",
+									"dependsOn": [
+										{
+											"activity": "ComputeNextKeySkip",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "KeySkip",
+										"value": {
+											"value": "@variables('KeySkipNext')",
+											"type": "Expression"
+										}
+									}
+								}
+							],
+							"timeout": "0.01:00:00"
+						}
+					},
+					{
+						"name": "ApplySync",
+						"description": "Merges the staged delta into the target (insert new, update changed), deletes rows missing from the source key set, and advances the watermark - all in one transaction. A Lookup is used instead of a stored procedure activity so the run statistics come back into the pipeline output. The procedure derives the new watermark from the staged rows rather than taking it as an argument, because Data Factory truncates date-like stored procedure arguments to whole seconds.",
+						"type": "Lookup",
+						"dependsOn": [
+							{
+								"activity": "UntilAllKeyPagesCopied",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.00:30:00",
+							"retry": 2,
+							"retryIntervalInSeconds": 60,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "AzureSqlSource",
+								"sqlReaderStoredProcedureName": "[[etl].[usp_ApplyRestaurantSync]",
+								"storedProcedureParameters": {
+									"ExpectedKeyCount": {
+										"type": "Int32",
+										"value": {
+											"value": "@int(variables('SourceRowCount'))",
+											"type": "Expression"
+										}
+									},
+									"ExpectedDeltaCount": {
+										"type": "Int32",
+										"value": {
+											"value": "@int(variables('ExpectedDeltaCount'))",
+											"type": "Expression"
+										}
+									}
+								},
+								"queryTimeout": "00:20:00",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DS_Dest_WatermarkControl",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": true
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"parameters": {
+					"graphQlEndpoint": {
+						"type": "string",
+						"defaultValue": "https://nyc-dohmh-adf-graphql-to-sql-fuhnhxaxgzgyfqbq.canadacentral-01.azurewebsites.net/graphql"
+					},
+					"sourceTableName": {
+						"type": "string",
+						"defaultValue": "demo.Restaurant"
+					},
+					"pageSize": {
+						"type": "int",
+						"defaultValue": 30
+					}
+				},
+				"variables": {
+					"OldWatermark": {
+						"type": "String",
+						"defaultValue": "1900-01-01T00:00:00Z"
+					},
+					"NewWatermark": {
+						"type": "String"
+					},
+					"SourceRowCount": {
+						"type": "String",
+						"defaultValue": "0"
+					},
+					"ExpectedDeltaCount": {
+						"type": "String",
+						"defaultValue": "0"
+					},
+					"DataSkip": {
+						"type": "String",
+						"defaultValue": "0"
+					},
+					"DataSkipNext": {
+						"type": "String",
+						"defaultValue": "0"
+					},
+					"DataHasMore": {
+						"type": "Boolean",
+						"defaultValue": true
+					},
+					"KeySkip": {
+						"type": "String",
+						"defaultValue": "0"
+					},
+					"KeySkipNext": {
+						"type": "String",
+						"defaultValue": "0"
+					},
+					"KeyHasMore": {
+						"type": "Boolean",
+						"defaultValue": true
+					}
+				},
+				"folder": {
+					"name": "GraphQL incremental sync"
+				},
+				"annotations": [],
+				"lastPublishTime": "2026-09-18T15:06:02Z"
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/datasets/DS_Dest_WatermarkControl')]",
+				"[concat(variables('factoryId'), '/linkedServices/LS_DestinationSql')]",
+				"[concat(variables('factoryId'), '/datasets/DS_GraphQlApi')]",
+				"[concat(variables('factoryId'), '/datasets/DS_Dest_StgRestaurant')]",
+				"[concat(variables('factoryId'), '/datasets/DS_Dest_StgRestaurantKey')]"
+			]
+		}
+	]
+}

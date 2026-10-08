@@ -1,0 +1,21 @@
+{
+	"$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentParameters.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"factoryName": {
+			"value": "nyc-dohmh-adf-graphql-to-sql"
+		},
+		"LS_DestinationSql_connectionString": {
+			"value": "Integrated Security=False;Encrypt=True;Connection Timeout=60;Data Source=nyc-dohmh-adf-graphql-to-sql.database.windows.net;Initial Catalog=nyc-dohmh-adf-graphql-to-sql-2"
+		},
+		"LS_GraphQlApi_properties_typeProperties_url": {
+			"value": "https://nyc-dohmh-adf-graphql-to-sql-fuhnhxaxgzgyfqbq.canadacentral-01.azurewebsites.net/graphql"
+		},
+		"containerUri": {
+			"value": ""
+		},
+		"containerSasToken": {
+			"value": ""
+		}
+	}
+}
