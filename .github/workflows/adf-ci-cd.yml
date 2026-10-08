@@ -1,0 +1,157 @@
+# CI/CD for the Data Factory artifacts in this repository. It follows "the new CI/CD flow" in
+# https://learn.microsoft.com/azure/data-factory/continuous-integration-delivery-improvements:
+#
+#   build       Validates the factory resources and exports them as an ARM template, using the
+#               @microsoft/azure-data-factory-utilities npm package. Pull requests stop here.
+#   deploy-dev  Deploys that template to the development factory.
+#   deploy-prd  Waits for approval, then deploys the same template to the production factory.
+#
+# Each environment's values (factory, linked service targets, ...) come from
+# deploy/environments/<environment>.json. See readme.md for the one-time setup.
+
+name: ADF CI/CD
+
+on:
+  push:
+    branches: [collab]
+    paths-ignore: ['**.md']
+  pull_request:
+    branches: [collab]
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  # A new commit to a pull request cancels the build of the previous one. Runs for the
+  # collaboration branch aren't cancelled; adf-deploy.yml runs deployments one at a time.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Validate and export ARM template
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: build/package-lock.json
+
+      - name: Install the Data Factory utilities
+        working-directory: build
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Validate and export the ARM template
+        working-directory: build
+        shell: bash
+        run: |
+          shopt -s nullglob
+          factories=("$GITHUB_WORKSPACE"/factory/*.json)
+          if [ "${#factories[@]}" -ne 1 ]; then
+            echo "::error::Expected one factory definition in factory/, found ${#factories[@]}."
+            exit 1
+          fi
+          factory_name="$(basename "${factories[0]}" .json)"
+          # The export only takes the factory name from this resource ID, as the default value of
+          # the factoryName parameter. Each environment's deployment sets its own factory.
+          factory_id="/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/adf-build/providers/Microsoft.DataFactory/factories/$factory_name"
+          # export validates every resource before exporting, so a separate validate run isn't needed.
+          npm run build -- export "$GITHUB_WORKSPACE" "$factory_id" ArmTemplate
+          # The export can report success without writing its output, so check for it.
+          for file in ARMTemplateForFactory.json ARMTemplateParametersForFactory.json PrePostDeploymentScript.ps1; do
+            if [ ! -s "ArmTemplate/$file" ]; then
+              echo "::error::The export didn't produce ArmTemplate/$file."
+              exit 1
+            fi
+          done
+          echo "FACTORY_NAME=$factory_name" >> "$GITHUB_ENV"
+
+      - name: Check the environment configurations
+        shell: pwsh
+        run: |
+          $configs = @(Get-ChildItem -Path deploy/environments -Filter *.json -File)
+          foreach ($required in 'dev', 'prd') {
+            if ($required -notin $configs.BaseName) {
+              throw "deploy/environments/$required.json is missing."
+            }
+          }
+          foreach ($config in $configs) {
+            ./deploy/Deploy-AdfArtifacts.ps1 -Environment $config.BaseName -ArmTemplateFolder build/ArmTemplate -CheckConfigurationOnly
+          }
+
+      - name: Stage the deployment artifact
+        shell: pwsh
+        run: |
+          $artifact = Join-Path $env:RUNNER_TEMP 'adf-artifact'
+          New-Item -ItemType Directory -Path $artifact -Force | Out-Null
+          Copy-Item -Path build/ArmTemplate, deploy -Destination $artifact -Recurse
+          $lock = Get-Content -Raw -Path build/package-lock.json | ConvertFrom-Json -AsHashtable
+          # The utilities download their export engine when they run, so record which one ran.
+          $engine = Get-ChildItem -Path build/downloads -Filter main.js -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          [ordered]@{
+            sourceCommit        = $env:GITHUB_SHA
+            sourceRef           = $env:GITHUB_REF
+            repository          = $env:GITHUB_REPOSITORY
+            workflow            = $env:GITHUB_WORKFLOW_REF -replace '@.*$'
+            runId               = [long]$env:GITHUB_RUN_ID
+            runNumber           = [long]$env:GITHUB_RUN_NUMBER
+            runAttempt          = [long]$env:GITHUB_RUN_ATTEMPT
+            runUrl              = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            eventName           = $env:GITHUB_EVENT_NAME
+            factoryName         = $env:FACTORY_NAME
+            nodeVersion         = node --version
+            adfUtilitiesVersion = $lock['packages']['node_modules/@microsoft/azure-data-factory-utilities']['version']
+            adfEngineSha256     = $engine ? (Get-FileHash -Algorithm SHA256 -LiteralPath $engine.FullName).Hash.ToLowerInvariant() : $null
+            builtAtUtc          = [DateTime]::UtcNow.ToString('o')
+          } | ConvertTo-Json | Set-Content -Path (Join-Path $artifact 'build-info.json') -Encoding utf8NoBOM
+          Get-Content -Raw -Path (Join-Path $artifact 'build-info.json')
+
+      - name: Upload the deployment artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ArmTemplates
+          path: ${{ runner.temp }}/adf-artifact
+          if-no-files-found: error
+
+  deploy-dev:
+    name: Deploy to dev
+    needs: build
+    # Pull requests only build; only the collaboration branch deploys.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/collab'
+    permissions:
+      actions: read
+      id-token: write
+    uses: ./.github/workflows/adf-deploy.yml
+    with:
+      environment: dev
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+  deploy-prd:
+    name: Deploy to prd
+    needs: deploy-dev
+    permissions:
+      actions: read
+      id-token: write
+    uses: ./.github/workflows/adf-deploy.yml
+    with:
+      environment: prd
+      # The prd environment's required reviewers approve the deployment before it starts.
+      require-approval: true
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}

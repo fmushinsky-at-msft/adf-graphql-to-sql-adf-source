@@ -1,0 +1,11 @@
+{
+  "name": "adf-build",
+  "private": true,
+  "description": "Validates the Data Factory resources in this repository and exports them as an ARM template (used by .github/workflows/adf-ci-cd.yml).",
+  "scripts": {
+    "build": "node node_modules/@microsoft/azure-data-factory-utilities/lib/index"
+  },
+  "dependencies": {
+    "@microsoft/azure-data-factory-utilities": "1.0.3"
+  }
+}

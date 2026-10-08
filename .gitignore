@@ -1,0 +1,4 @@
+# ADF build tooling (see build/package.json)
+build/node_modules/
+build/downloads/
+build/ArmTemplate/

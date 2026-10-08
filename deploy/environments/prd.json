@@ -1,0 +1,20 @@
+{
+	"description": "Production. Sets every template parameter, because the exported values belong to development.",
+	"resourceGroupName": "nyc-dohmh-adf-graphql-to-sql",
+	"factoryName": "nyc-dohmh-adf-graphql-to-sql-prd",
+	"isAuthoringFactory": false,
+	"factoryIdentity": {
+		"systemAssignedPrincipalId": "f0d636c6-4bb4-415a-b473-771b0b905374"
+	},
+	"parameters": {
+		"LS_DestinationSql_connectionString": {
+			"value": "Integrated Security=False;Encrypt=True;Connection Timeout=60;Data Source=nyc-dohmh-adf-graphql-to-sql.database.windows.net;Initial Catalog=nyc-dohmh-adf-graphql-to-sql-prd-2"
+		},
+		"LS_GraphQlApi_properties_typeProperties_url": {
+			"value": "https://nyc-dohmh-adf-graphql-to-sql-fuhnhxaxgzgyfqbq.canadacentral-01.azurewebsites.net/graphql"
+		},
+		"PL_Sync_Restaurants_GraphQL_To_Sql_graphQlEndpoint": {
+			"value": "https://nyc-dohmh-adf-graphql-to-sql-fuhnhxaxgzgyfqbq.canadacentral-01.azurewebsites.net/graphql"
+		}
+	}
+}

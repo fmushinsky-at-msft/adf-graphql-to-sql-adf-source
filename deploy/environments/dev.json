@@ -1,0 +1,10 @@
+{
+	"description": "Development: the factory connected to this repository. Parameters default to the values exported from it.",
+	"resourceGroupName": "nyc-dohmh-adf-graphql-to-sql",
+	"factoryName": "nyc-dohmh-adf-graphql-to-sql",
+	"isAuthoringFactory": true,
+	"factoryIdentity": {
+		"systemAssignedPrincipalId": "8686c50d-ca5f-4e1c-9695-cb7d9545746f"
+	},
+	"parameters": {}
+}

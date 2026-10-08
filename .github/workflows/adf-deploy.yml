@@ -1,0 +1,122 @@
+# Deploys the ARM template built by adf-ci-cd.yml to one environment. adf-ci-cd.yml calls it once
+# per environment.
+#
+# The job runs in the GitHub environment with the same name, so it gets that environment's
+# protection rules (required reviewers for prd) and its secrets. The secrets identify the
+# environment's deployment identity; GitHub signs in to Azure with OpenID Connect, so no Azure
+# credential is stored in GitHub. See readme.md for the one-time setup.
+
+name: ADF deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub environment to deploy to. Also selects deploy/environments/<environment>.json.
+        type: string
+        required: true
+      artifact-name:
+        description: Name of the build artifact that holds the ARM template.
+        type: string
+        default: ArmTemplates
+      require-approval:
+        description: Fail without deploying unless the GitHub environment has required reviewers.
+        type: boolean
+        default: false
+    secrets:
+      AZURE_CLIENT_ID:
+        description: Client ID of the environment's deployment identity.
+        required: true
+      AZURE_TENANT_ID:
+        description: Microsoft Entra tenant ID.
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        description: Subscription that contains the environment's data factory.
+        required: true
+
+permissions: {}
+
+jobs:
+  deploy:
+    name: Deploy ARM template
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    # Deployments to an environment run one at a time. At most one more waits its turn, and a
+    # newer run replaces it. Deploy-AdfArtifacts.ps1 stops an older run that's approved late.
+    concurrency:
+      group: adf-deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    # Time spent waiting for approval doesn't count.
+    timeout-minutes: 60
+    permissions:
+      actions: read # read the environment's protection rules
+      id-token: write # sign in to Azure with OpenID Connect
+    steps:
+      - name: Check the environment's protection rules
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          REQUIRE_APPROVAL: ${{ inputs.require-approval }}
+        run: |
+          # GitHub creates a missing environment without protection rules the first time a job
+          # uses it. Without this check, such a job would deploy without waiting for approval.
+          if ! settings="$(gh api "repos/$GITHUB_REPOSITORY/environments/$ENVIRONMENT")"; then
+            echo "::error::Couldn't read the settings of the $ENVIRONMENT environment."
+            exit 1
+          fi
+          reviewers="$(jq '[.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[]?] | length' <<< "$settings")"
+          branch_policy="$(jq -c '.deployment_branch_policy' <<< "$settings")"
+          echo "Environment $ENVIRONMENT: $reviewers required reviewer(s), deployment branch policy: $branch_policy"
+          if [ "$REQUIRE_APPROVAL" = "true" ] && [ "$reviewers" -eq 0 ]; then
+            echo "::error::The $ENVIRONMENT environment has no required reviewers, so this deployment didn't wait for approval. Nothing was deployed. Add required reviewers in Settings > Environments > $ENVIRONMENT (see readme.md), then re-run this job."
+            exit 1
+          fi
+          if [ "$branch_policy" = "null" ]; then
+            echo "::warning::Any branch can deploy to the $ENVIRONMENT environment. In Settings > Environments > $ENVIRONMENT, limit deployment branches to collab."
+          fi
+
+      - name: Check the Azure sign-in secrets
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID; do
+            if [ -z "${!name}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Add these secrets to the $ENVIRONMENT environment (Settings > Environments > $ENVIRONMENT): ${missing[*]}. See readme.md."
+            exit 1
+          fi
+
+      - name: Download the ARM template
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ runner.temp }}/adf-artifact
+
+      - name: Sign in to Azure
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          enable-AzPSSession: true
+
+      - name: Deploy to the ${{ inputs.environment }} factory
+        uses: azure/powershell@f5b8adcfff1904872c7b98d4012d4914d74b1a82 # v3.0.0
+        env:
+          ADF_ENVIRONMENT: ${{ inputs.environment }}
+          ADF_ARTIFACT_DIR: ${{ runner.temp }}/adf-artifact
+          SuppressAzurePowerShellBreakingChangeWarnings: 'true'
+        with:
+          azPSVersion: latest
+          errorActionPreference: stop
+          inlineScript: |
+            & (Join-Path $env:ADF_ARTIFACT_DIR 'deploy/Deploy-AdfArtifacts.ps1') -Environment $env:ADF_ENVIRONMENT
