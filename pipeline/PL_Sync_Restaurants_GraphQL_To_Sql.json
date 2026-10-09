@@ -1,7 +1,7 @@
 {
 	"name": "PL_Sync_Restaurants_GraphQL_To_Sql",
 	"properties": {
-		"description": "Incrementally syncs demo.Restaurant from the GraphQL API into dbo.Restaurant in the destination database. Uses a watermark for the delta window, pages 30 rows at a time, and applies inserts, updates and deletes.",
+		"description": "Incrementally syncs demo.Restaurant from the GraphQL API into dbo.Restaurant in the destination database. Uses a watermark for the delta window, pages 30 rows at a time, and applies inserts and updates.",
 		"activities": [
 			{
 				"name": "LookupStoredWatermark",
@@ -40,34 +40,6 @@
 				}
 			},
 			{
-				"name": "GetSourceWatermark",
-				"description": "Reads the source high-water mark and row count once, up front. Pinning the upper bound keeps offset paging stable even if rows change while the pipeline is still reading.",
-				"type": "WebActivity",
-				"dependsOn": [],
-				"policy": {
-					"timeout": "0.00:10:00",
-					"retry": 4,
-					"retryIntervalInSeconds": 60,
-					"secureOutput": false,
-					"secureInput": false
-				},
-				"userProperties": [],
-				"typeProperties": {
-					"method": "POST",
-					"headers": {
-						"Content-Type": "application/json",
-						"Accept": "application/json"
-					},
-					"url": {
-						"value": "@pipeline().parameters.graphQlEndpoint",
-						"type": "Expression"
-					},
-					"body": {
-						"query": "{ restaurantWatermark { maxLastUpdatedDateTime rowCount serverUtcNow } }"
-					}
-				}
-			},
-			{
 				"name": "SetOldWatermark",
 				"description": "formatDateTime pins the value to millisecond precision. Without it the boundary can round to whole seconds and rows get re-read on every run.",
 				"type": "SetVariable",
@@ -88,6 +60,42 @@
 					"variableName": "OldWatermark",
 					"value": {
 						"value": "@formatDateTime(activity('LookupStoredWatermark').output.firstRow.WatermarkValue, 'yyyy-MM-ddTHH:mm:ss.fff')",
+						"type": "Expression"
+					}
+				}
+			},
+			{
+				"name": "GetSourceWatermark",
+				"description": "Reads the current source watermark - the newest LastUpdatedDateTime - once, up front, by asking the restaurants query for the newest change after the stored watermark. Pinning it as the upper bound keeps offset paging stable even if rows change while the pipeline is still reading.",
+				"type": "WebActivity",
+				"dependsOn": [
+					{
+						"activity": "SetOldWatermark",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:10:00",
+					"retry": 4,
+					"retryIntervalInSeconds": 60,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"method": "POST",
+					"headers": {
+						"Content-Type": "application/json",
+						"Accept": "application/json"
+					},
+					"url": {
+						"value": "@pipeline().parameters.graphQlEndpoint",
+						"type": "Expression"
+					},
+					"body": {
+						"value": "@concat('{\"query\":\"query($updatedAfter:String){restaurants(updatedAfter:$updatedAfter,sort:LAST_UPDATED_DESC,skip:0){items{lastUpdatedDateTime}}}\",\"variables\":{\"updatedAfter\":\"',variables('OldWatermark'),'\"}}')",
 						"type": "Expression"
 					}
 				}
@@ -129,7 +137,7 @@
 			},
 			{
 				"name": "SetNewWatermark",
-				"description": "Falls back to the source server clock when the table is empty and MAX(LastUpdatedDateTime) is null. formatDateTime pins the value to millisecond precision.",
+				"description": "The newest change becomes the pinned upper bound of this run's delta window. When nothing changed since the stored watermark the probe returns no rows, so the bound stays where it was and the window is empty. formatDateTime pins the value to millisecond precision.",
 				"type": "SetVariable",
 				"dependsOn": [
 					{
@@ -147,32 +155,7 @@
 				"typeProperties": {
 					"variableName": "NewWatermark",
 					"value": {
-						"value": "@formatDateTime(coalesce(activity('GetSourceWatermark').output.data.restaurantWatermark.maxLastUpdatedDateTime, activity('GetSourceWatermark').output.data.restaurantWatermark.serverUtcNow), 'yyyy-MM-ddTHH:mm:ss.fff')",
-						"type": "Expression"
-					}
-				}
-			},
-			{
-				"name": "SetSourceRowCount",
-				"description": "Row count reported by the source. Used as a guard so an incomplete key harvest can never delete good rows from the target.",
-				"type": "SetVariable",
-				"dependsOn": [
-					{
-						"activity": "SetNewWatermark",
-						"dependencyConditions": [
-							"Succeeded"
-						]
-					}
-				],
-				"policy": {
-					"secureOutput": false,
-					"secureInput": false
-				},
-				"userProperties": [],
-				"typeProperties": {
-					"variableName": "SourceRowCount",
-					"value": {
-						"value": "@string(activity('GetSourceWatermark').output.data.restaurantWatermark.rowCount)",
+						"value": "@if(empty(activity('GetSourceWatermark').output.data.restaurants.items), variables('OldWatermark'), formatDateTime(activity('GetSourceWatermark').output.data.restaurants.items[0].lastUpdatedDateTime, 'yyyy-MM-ddTHH:mm:ss.fff'))",
 						"type": "Expression"
 					}
 				}
@@ -280,17 +263,11 @@
 			},
 			{
 				"name": "StartSync",
-				"description": "Clears the staging tables so the run always starts clean, even after a previous failure.",
+				"description": "Clears the staging table so the run always starts clean, even after a previous failure.",
 				"type": "SqlServerStoredProcedure",
 				"dependsOn": [
 					{
 						"activity": "SetOldWatermark",
-						"dependencyConditions": [
-							"Succeeded"
-						]
-					},
-					{
-						"activity": "SetSourceRowCount",
 						"dependencyConditions": [
 							"Succeeded"
 						]
@@ -562,172 +539,12 @@
 				}
 			},
 			{
-				"name": "UntilAllKeyPagesCopied",
-				"description": "Pages through every primary key that currently exists at the source. A watermark delta can never reveal a deleted row, so the key set is what makes delete detection possible.",
-				"type": "Until",
-				"dependsOn": [
-					{
-						"activity": "UntilAllDeltaPagesCopied",
-						"dependencyConditions": [
-							"Succeeded"
-						]
-					}
-				],
-				"userProperties": [],
-				"typeProperties": {
-					"expression": {
-						"value": "@not(variables('KeyHasMore'))",
-						"type": "Expression"
-					},
-					"activities": [
-						{
-							"name": "CopyKeyPage",
-							"type": "Copy",
-							"dependsOn": [],
-							"policy": {
-								"timeout": "0.00:20:00",
-								"retry": 4,
-								"retryIntervalInSeconds": 60,
-								"secureOutput": false,
-								"secureInput": false
-							},
-							"userProperties": [],
-							"typeProperties": {
-								"source": {
-									"type": "RestSource",
-									"httpRequestTimeout": "00:05:00",
-									"requestInterval": "00.00:00:00.100",
-									"requestMethod": "POST",
-									"requestBody": {
-										"value": "@concat('{\"query\":\"query($skip:Int!){restaurantKeys(skip:$skip){items{restaurantId}}}\",\"variables\":{\"skip\":',variables('KeySkip'),'}}')",
-										"type": "Expression"
-									},
-									"additionalHeaders": {
-										"Content-Type": "application/json",
-										"Accept": "application/json"
-									}
-								},
-								"sink": {
-									"type": "AzureSqlSink",
-									"writeBehavior": "insert",
-									"sqlWriterUseTableLock": false,
-									"tableOption": "none",
-									"disableMetricsCollection": false
-								},
-								"enableStaging": false,
-								"translator": {
-									"type": "TabularTranslator",
-									"mappings": [
-										{
-											"source": {
-												"path": "['restaurantId']"
-											},
-											"sink": {
-												"name": "RestaurantId",
-												"type": "Int32"
-											}
-										}
-									],
-									"collectionReference": "$['data']['restaurantKeys']['items']",
-									"mapComplexValuesToString": false
-								}
-							},
-							"inputs": [
-								{
-									"referenceName": "DS_GraphQlApi",
-									"type": "DatasetReference"
-								}
-							],
-							"outputs": [
-								{
-									"referenceName": "DS_Dest_StgRestaurantKey",
-									"type": "DatasetReference"
-								}
-							]
-						},
-						{
-							"name": "EvaluateKeyHasMore",
-							"type": "SetVariable",
-							"dependsOn": [
-								{
-									"activity": "CopyKeyPage",
-									"dependencyConditions": [
-										"Succeeded"
-									]
-								}
-							],
-							"policy": {
-								"secureOutput": false,
-								"secureInput": false
-							},
-							"userProperties": [],
-							"typeProperties": {
-								"variableName": "KeyHasMore",
-								"value": {
-									"value": "@equals(activity('CopyKeyPage').output.rowsCopied, pipeline().parameters.pageSize)",
-									"type": "Expression"
-								}
-							}
-						},
-						{
-							"name": "ComputeNextKeySkip",
-							"type": "SetVariable",
-							"dependsOn": [
-								{
-									"activity": "EvaluateKeyHasMore",
-									"dependencyConditions": [
-										"Succeeded"
-									]
-								}
-							],
-							"policy": {
-								"secureOutput": false,
-								"secureInput": false
-							},
-							"userProperties": [],
-							"typeProperties": {
-								"variableName": "KeySkipNext",
-								"value": {
-									"value": "@string(add(int(variables('KeySkip')), int(pipeline().parameters.pageSize)))",
-									"type": "Expression"
-								}
-							}
-						},
-						{
-							"name": "AdvanceKeySkip",
-							"type": "SetVariable",
-							"dependsOn": [
-								{
-									"activity": "ComputeNextKeySkip",
-									"dependencyConditions": [
-										"Succeeded"
-									]
-								}
-							],
-							"policy": {
-								"secureOutput": false,
-								"secureInput": false
-							},
-							"userProperties": [],
-							"typeProperties": {
-								"variableName": "KeySkip",
-								"value": {
-									"value": "@variables('KeySkipNext')",
-									"type": "Expression"
-								}
-							}
-						}
-					],
-					"timeout": "0.01:00:00"
-				}
-			},
-			{
 				"name": "ApplySync",
-				"description": "Merges the staged delta into the target (insert new, update changed), deletes rows missing from the source key set, and advances the watermark - all in one transaction. A Lookup is used instead of a stored procedure activity so the run statistics come back into the pipeline output. The procedure derives the new watermark from the staged rows rather than taking it as an argument, because Data Factory truncates date-like stored procedure arguments to whole seconds.",
+				"description": "Merges the staged delta into the target (insert new, update changed) and advances the watermark - all in one transaction. A Lookup is used instead of a stored procedure activity so the run statistics come back into the pipeline output. The procedure derives the new watermark from the staged rows rather than taking it as an argument, because Data Factory truncates date-like stored procedure arguments to whole seconds.",
 				"type": "Lookup",
 				"dependsOn": [
 					{
-						"activity": "UntilAllKeyPagesCopied",
+						"activity": "UntilAllDeltaPagesCopied",
 						"dependencyConditions": [
 							"Succeeded"
 						]
@@ -746,13 +563,6 @@
 						"type": "AzureSqlSource",
 						"sqlReaderStoredProcedureName": "[etl].[usp_ApplyRestaurantSync]",
 						"storedProcedureParameters": {
-							"ExpectedKeyCount": {
-								"type": "Int32",
-								"value": {
-									"value": "@int(variables('SourceRowCount'))",
-									"type": "Expression"
-								}
-							},
 							"ExpectedDeltaCount": {
 								"type": "Int32",
 								"value": {
@@ -794,10 +604,6 @@
 			"NewWatermark": {
 				"type": "String"
 			},
-			"SourceRowCount": {
-				"type": "String",
-				"defaultValue": "0"
-			},
 			"ExpectedDeltaCount": {
 				"type": "String",
 				"defaultValue": "0"
@@ -811,18 +617,6 @@
 				"defaultValue": "0"
 			},
 			"DataHasMore": {
-				"type": "Boolean",
-				"defaultValue": true
-			},
-			"KeySkip": {
-				"type": "String",
-				"defaultValue": "0"
-			},
-			"KeySkipNext": {
-				"type": "String",
-				"defaultValue": "0"
-			},
-			"KeyHasMore": {
 				"type": "Boolean",
 				"defaultValue": true
 			}
